@@ -82,7 +82,7 @@ func (c *DufsClient) makeRequest(method, path string, body io.Reader, headers ma
 	return c.Client.Do(req)
 }
 
-// MCPServer MCP 服务器
+// MCPServer MCP 文件服务器
 type MCPServer struct {
 	dufsClient *DufsClient
 	tools      []MCPTool
@@ -95,7 +95,7 @@ func NewMCPServer(config Config) *MCPServer {
 	tools := []MCPTool{
 		{
 			Name:        "dufs_upload",
-			Description: "上传文件到 dufs 服务器。如果未指定 remote_path，代码会自动创建路径：upload_dir/YYYYMMDD/文件名（例如：uploads/20251125/file.txt）",
+			Description: "上传文件到 dufs 文件服务器。如果未指定 remote_path，代码会自动创建路径：upload_dir/YYYYMMDD/文件名（例如：uploads/20251125/file.txt）",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -113,7 +113,7 @@ func NewMCPServer(config Config) *MCPServer {
 		},
 		{
 			Name:        "dufs_download",
-			Description: "从 dufs 服务器下载文件",
+			Description: "从 dufs 文件服务器下载文件",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -131,7 +131,7 @@ func NewMCPServer(config Config) *MCPServer {
 		},
 		{
 			Name:        "dufs_delete",
-			Description: "删除 dufs 服务器上的文件或目录",
+			Description: "删除 dufs 文件服务器上的文件或目录",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -145,7 +145,7 @@ func NewMCPServer(config Config) *MCPServer {
 		},
 		{
 			Name:        "dufs_list",
-			Description: "列出 dufs 服务器上的目录内容",
+			Description: "列出 dufs 文件服务器上的目录内容",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -167,7 +167,7 @@ func NewMCPServer(config Config) *MCPServer {
 		},
 		{
 			Name:        "dufs_create_dir",
-			Description: "在 dufs 服务器上创建目录",
+			Description: "在 dufs 文件服务器上创建目录",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -181,7 +181,7 @@ func NewMCPServer(config Config) *MCPServer {
 		},
 		{
 			Name:        "dufs_move",
-			Description: "移动或重命名 dufs 服务器上的文件或目录",
+			Description: "移动或重命名 dufs 文件服务器上的文件或目录",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -231,7 +231,7 @@ func NewMCPServer(config Config) *MCPServer {
 		},
 		{
 			Name:        "dufs_health",
-			Description: "检查 dufs 服务器健康状态",
+			Description: "检查 dufs 文件服务器健康状态",
 			InputSchema: map[string]interface{}{
 				"type":       "object",
 				"properties": map[string]interface{}{},

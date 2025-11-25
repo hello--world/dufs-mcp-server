@@ -8,24 +8,26 @@
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            background: #f5f5f7;
             min-height: 100vh;
             padding: 15px;
-            color: #1a1a1a;
+            color: #1d1d1f;
         }
         .container {
             max-width: 1200px;
             margin: 0 auto;
-            background: white;
+            background: #ffffff;
             border-radius: 12px;
-            box-shadow: 0 10px 40px rgba(0,0,0,0.3);
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.08);
             overflow: hidden;
+            border: 1px solid rgba(0, 0, 0, 0.05);
         }
         .header {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            padding: 20px 30px;
+            background: #ffffff;
+            color: #1d1d1f;
+            padding: 24px 30px;
             text-align: center;
+            border-bottom: 1px solid rgba(0, 0, 0, 0.08);
         }
         .header h1 {
             font-size: 2em;
@@ -45,7 +47,7 @@
             padding: 20px 25px;
         }
         .left-col {
-            border-right: 1px solid #e0e0e0;
+            border-right: 1px solid rgba(0, 0, 0, 0.08);
         }
         .section {
             margin-bottom: 20px;
@@ -69,7 +71,7 @@
             margin-bottom: 15px;
         }
         .intro strong {
-            color: #667eea;
+            color: #007AFF;
         }
         .download-grid {
             display: grid;
@@ -77,8 +79,8 @@
             gap: 10px;
         }
         .download-card {
-            background: #f8f9fa;
-            border: 1px solid #e0e0e0;
+            background: #f5f5f7;
+            border: 1px solid rgba(0, 0, 0, 0.08);
             border-radius: 8px;
             padding: 12px 14px;
             display: flex;
@@ -87,9 +89,10 @@
             transition: all 0.2s ease;
         }
         .download-card:hover {
-            border-color: #667eea;
-            background: #f0f4ff;
+            border-color: #007AFF;
+            background: #f0f0f2;
             transform: translateX(3px);
+            box-shadow: 0 2px 8px rgba(0, 122, 255, 0.1);
         }
         .download-info {
             flex: 1;
@@ -107,7 +110,7 @@
         }
         .badge {
             display: inline-block;
-            background: #667eea;
+            background: #007AFF;
             color: white;
             padding: 2px 8px;
             border-radius: 10px;
@@ -115,21 +118,54 @@
             font-weight: 600;
             margin-left: 6px;
         }
+        .download-actions {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            margin-left: 12px;
+        }
         .download-btn {
-            background: linear-gradient(135deg, #667eea, #764ba2);
+            background: #007AFF;
             color: white;
             padding: 8px 16px;
             border-radius: 6px;
             text-decoration: none;
-            font-weight: 600;
+            font-weight: 500;
             font-size: 0.85em;
             transition: all 0.2s ease;
             white-space: nowrap;
-            margin-left: 12px;
         }
         .download-btn:hover {
             transform: translateY(-1px);
-            box-shadow: 0 4px 8px rgba(102, 126, 234, 0.3);
+            box-shadow: 0 4px 8px rgba(0, 122, 255, 0.3);
+            background: #0051D5;
+        }
+        .copy-btn {
+            background: #f5f5f7;
+            color: #1d1d1f;
+            border: 1px solid rgba(0, 0, 0, 0.15);
+            padding: 8px 12px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: 500;
+            font-size: 0.85em;
+            transition: all 0.2s ease;
+            white-space: nowrap;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+        .copy-btn:hover {
+            background: #e5e5e7;
+            border-color: rgba(0, 0, 0, 0.25);
+        }
+        .copy-btn:active {
+            transform: scale(0.95);
+        }
+        .copy-btn.copied {
+            background: #007AFF;
+            color: white;
+            border-color: #007AFF;
         }
         .config-code {
             background: #1e1e1e;
@@ -163,7 +199,7 @@
             }
             .left-col {
                 border-right: none;
-                border-bottom: 1px solid #e0e0e0;
+                border-bottom: 1px solid rgba(0, 0, 0, 0.08);
             }
             .features {
                 grid-template-columns: 1fr;
@@ -194,35 +230,50 @@
                                 <div class="download-name">Linux (AMD64) <span class="badge recommend-badge" style="display: none;">推荐</span></div>
                                 <div class="download-desc">适用于大多数 Linux 服务器和桌面系统</div>
                             </div>
-                            <a href="dufs-mcp-server-linux-amd64.zip" class="download-btn" download>下载</a>
+                            <div class="download-actions">
+                                <button class="copy-btn" data-url="dufs-mcp-server-linux-amd64.zip">📋 复制</button>
+                                <a href="dufs-mcp-server-linux-amd64.zip" class="download-btn" download>下载</a>
+                            </div>
                         </div>
                         <div class="download-card" data-platform="linux-arm64">
                             <div class="download-info">
                                 <div class="download-name">Linux (ARM64) <span class="badge recommend-badge" style="display: none;">推荐</span></div>
                                 <div class="download-desc">适用于 ARM 架构的 Linux 系统</div>
                             </div>
-                            <a href="dufs-mcp-server-linux-arm64.zip" class="download-btn" download>下载</a>
+                            <div class="download-actions">
+                                <button class="copy-btn" data-url="dufs-mcp-server-linux-arm64.zip">📋 复制</button>
+                                <a href="dufs-mcp-server-linux-arm64.zip" class="download-btn" download>下载</a>
+                            </div>
                         </div>
                         <div class="download-card" data-platform="darwin-amd64">
                             <div class="download-info">
                                 <div class="download-name">macOS (AMD64) <span class="badge recommend-badge" style="display: none;">推荐</span></div>
                                 <div class="download-desc">适用于 Intel 芯片的 Mac</div>
                             </div>
-                            <a href="dufs-mcp-server-darwin-amd64.zip" class="download-btn" download>下载</a>
+                            <div class="download-actions">
+                                <button class="copy-btn" data-url="dufs-mcp-server-darwin-amd64.zip">📋 复制</button>
+                                <a href="dufs-mcp-server-darwin-amd64.zip" class="download-btn" download>下载</a>
+                            </div>
                         </div>
                         <div class="download-card" data-platform="darwin-arm64">
                             <div class="download-info">
                                 <div class="download-name">macOS (ARM64) <span class="badge recommend-badge" style="display: none;">推荐</span><span class="badge">Apple Silicon</span></div>
                                 <div class="download-desc">适用于 Apple Silicon 芯片的 Mac</div>
                             </div>
-                            <a href="dufs-mcp-server-darwin-arm64.zip" class="download-btn" download>下载</a>
+                            <div class="download-actions">
+                                <button class="copy-btn" data-url="dufs-mcp-server-darwin-arm64.zip">📋 复制</button>
+                                <a href="dufs-mcp-server-darwin-arm64.zip" class="download-btn" download>下载</a>
+                            </div>
                         </div>
                         <div class="download-card" data-platform="windows-amd64">
                             <div class="download-info">
                                 <div class="download-name">Windows (AMD64) <span class="badge recommend-badge" style="display: none;">推荐</span></div>
                                 <div class="download-desc">适用于 64 位 Windows 系统</div>
                             </div>
-                            <a href="dufs-mcp-server-windows-amd64.zip" class="download-btn" download>下载</a>
+                            <div class="download-actions">
+                                <button class="copy-btn" data-url="dufs-mcp-server-windows-amd64.zip">📋 复制</button>
+                                <a href="dufs-mcp-server-windows-amd64.zip" class="download-btn" download>下载</a>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -351,6 +402,50 @@
                 }
             }).catch(() => {
                 // 如果检测失败，不显示推荐标签
+            });
+            
+            // 复制按钮功能
+            const copyButtons = document.querySelectorAll('.copy-btn');
+            copyButtons.forEach(btn => {
+                btn.addEventListener('click', async function() {
+                    const url = this.getAttribute('data-url');
+                    const fullUrl = window.location.origin + basePath + '/' + url;
+                    
+                    try {
+                        await navigator.clipboard.writeText(fullUrl);
+                        // 更新按钮状态
+                        const originalText = this.textContent;
+                        this.textContent = '✓ 已复制';
+                        this.classList.add('copied');
+                        
+                        // 2秒后恢复
+                        setTimeout(() => {
+                            this.textContent = originalText;
+                            this.classList.remove('copied');
+                        }, 2000);
+                    } catch (err) {
+                        // 降级方案：使用传统方法
+                        const textArea = document.createElement('textarea');
+                        textArea.value = fullUrl;
+                        textArea.style.position = 'fixed';
+                        textArea.style.opacity = '0';
+                        document.body.appendChild(textArea);
+                        textArea.select();
+                        try {
+                            document.execCommand('copy');
+                            const originalText = this.textContent;
+                            this.textContent = '✓ 已复制';
+                            this.classList.add('copied');
+                            setTimeout(() => {
+                                this.textContent = originalText;
+                                this.classList.remove('copied');
+                            }, 2000);
+                        } catch (e) {
+                            alert('复制失败，请手动复制：' + fullUrl);
+                        }
+                        document.body.removeChild(textArea);
+                    }
+                });
             });
         })();
     </script>

@@ -1,0 +1,19 @@
+# 注意：此文件仅作为参考，程序不再使用配置文件
+# 所有配置通过环境变量传入，由 MCP 客户端在启动时设置
+# 
+# 环境变量示例：
+# DUFS_URL=http://127.0.0.1:5000
+# DUFS_USERNAME=admin
+# DUFS_PASSWORD=password
+# DUFS_UPLOAD_DIR=/uploads
+# DUFS_ALLOW_INSECURE=false
+# PORT=8080
+
+{
+  "dufs_url": "http://127.0.0.1:5000",
+  "username": "admin",
+  "password": "password",
+  "upload_dir": "/uploads",
+  "allow_insecure": false
+}
+

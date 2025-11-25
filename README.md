@@ -94,40 +94,60 @@ MCP_MODE=http DUFS_URL=http://127.0.0.1:5000 PORT=7887 ./dufs-mcp-server
 
 ## MCP 工具
 
-### 1. dufs_upload
+### 1. dufs_upload_batch
 
-上传文件到 dufs 服务器，自动按当前年月日创建目录
+批量上传文件并立即返回 `job_id`，上传任务在后台异步执行。即使只上传单个文件也推荐使用该工具（传入一个文件即可），可以避免前端等待造成的超时。
 
 **特性**：
-- `remote_path` 现在是**可选的**
-- 如果未指定 `remote_path`，会自动使用配置的 `upload_dir`（默认为 `uploads`）+ 当前日期目录（格式：`YYYYMMDD`）+ 文件名
-- 如果指定了 `remote_path`，则使用指定的路径
-- 自动创建必要的目录
+- 支持一个或多个文件，`files` 数组中的每一项都包含 `local_path`，可选 `remote_path`
+- 如果未指定 `remote_path`，自动使用配置的 `upload_dir`（默认为 `uploads`）+ 当日目录（`YYYYMMDD`）+ 文件名
+- 自动创建所需的远程目录结构
+- 工具调用会在 1 秒内返回 `job_id` 与任务状态，不会阻塞 Cursor
 
-**示例 1：自动路径（推荐）**
 ```json
 {
-  "name": "dufs_upload",
+  "name": "dufs_upload_batch",
   "arguments": {
-    "local_path": "/path/to/local/file.txt"
-  }
-}
-```
-上传到：`uploads/20251125/file.txt`（假设今天是 2025年11月25日）
-
-**示例 2：指定完整路径**
-```json
-{
-  "name": "dufs_upload",
-  "arguments": {
-    "local_path": "/path/to/local/file.txt",
-    "remote_path": "/custom/path/file.txt"
+    "files": [
+      {
+        "local_path": "/path/to/a.zip",
+        "remote_path": "dufs-mcp-server/a.zip"
+      },
+      {
+        "local_path": "/path/to/b.zip"
+      }
+    ]
   }
 }
 ```
 
-**示例 3：使用配置的 upload_dir**
-如果配置了 `DUFS_UPLOAD_DIR=/my-uploads`，则自动路径为：`my-uploads/20251125/file.txt`
+返回示例：
+
+```json
+{
+  "success": true,
+  "job_id": "job-1732532145123456789",
+  "status": "pending",
+  "task_count": 2
+}
+```
+
+单文件上传时同样把 `files` 数组设置为一个元素即可。
+
+### 2. dufs_upload_status
+
+查询批量上传任务的状态与每个文件的执行结果，便于在任务完成后获取远程路径、HTTP 状态码以及错误详情。
+
+```json
+{
+  "name": "dufs_upload_status",
+  "arguments": {
+    "job_id": "job-1732532145123456789"
+  }
+}
+```
+
+返回数据包含整体状态（`pending` / `running` / `completed` / `failed`）以及每个文件的上传结果、耗时、错误信息等，适合在批量上传后再查询目录结构或结果。
 
 ### 2. dufs_download
 

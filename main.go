@@ -8,7 +8,9 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -51,6 +53,27 @@ type DufsClient struct {
 	Client   *http.Client
 }
 
+type UploadTaskResult struct {
+	LocalPath           string    `json:"local_path"`
+	RequestedRemotePath string    `json:"requested_remote_path,omitempty"`
+	ResolvedRemotePath  string    `json:"resolved_remote_path,omitempty"`
+	Status              string    `json:"status"`
+	Message             string    `json:"message,omitempty"`
+	Error               string    `json:"error,omitempty"`
+	HTTPStatus          int       `json:"http_status,omitempty"`
+	StartedAt           time.Time `json:"started_at,omitempty"`
+	CompletedAt         time.Time `json:"completed_at,omitempty"`
+}
+
+type UploadJob struct {
+	ID          string             `json:"id"`
+	Status      string             `json:"status"`
+	Error       string             `json:"error,omitempty"`
+	CreatedAt   time.Time          `json:"created_at"`
+	CompletedAt time.Time          `json:"completed_at,omitempty"`
+	Tasks       []UploadTaskResult `json:"tasks"`
+}
+
 func NewDufsClient(config Config) *DufsClient {
 	return &DufsClient{
 		BaseURL:  config.DufsURL,
@@ -87,6 +110,8 @@ type MCPServer struct {
 	dufsClient *DufsClient
 	tools      []MCPTool
 	config     Config
+	jobs       map[string]*UploadJob
+	jobsMutex  sync.RWMutex
 }
 
 func NewMCPServer(config Config) *MCPServer {
@@ -95,7 +120,7 @@ func NewMCPServer(config Config) *MCPServer {
 	tools := []MCPTool{
 		{
 			Name:        "dufs_upload",
-			Description: "上传文件到 dufs 文件服务器。如果未指定 remote_path，代码会自动创建路径：upload_dir/YYYYMMDD/文件名（例如：uploads/20251125/file.txt）",
+			Description: "上传文件到 dufs 文件服务器。默认同步上传，如果指定 async=true 则异步上传并返回 job_id。",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -107,8 +132,60 @@ func NewMCPServer(config Config) *MCPServer {
 						"type":        "string",
 						"description": "远程文件路径（可选）。如果未指定，代码会自动创建路径：配置的 upload_dir（默认为 uploads）/当前日期（YYYYMMDD格式）/文件名。例如：uploads/20251125/file.txt",
 					},
+					"async": map[string]interface{}{
+						"type":        "boolean",
+						"description": "是否异步上传（可选，默认为 false，即同步上传）。如果设置为 true，则立即返回 job_id，上传在后台执行。",
+						"default":     false,
+					},
 				},
 				"required": []string{"local_path"},
+			},
+		},
+		{
+			Name:        "dufs_upload_batch",
+			Description: "批量上传文件到 dufs 文件服务器。默认异步上传并立即返回 job_id，如果指定 async=false 则同步上传所有文件。",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"files": map[string]interface{}{
+						"type":        "array",
+						"description": "需要上传的文件列表",
+						"items": map[string]interface{}{
+							"type": "object",
+							"properties": map[string]interface{}{
+								"local_path": map[string]interface{}{
+									"type":        "string",
+									"description": "本地文件路径",
+								},
+								"remote_path": map[string]interface{}{
+									"type":        "string",
+									"description": "远程文件路径（可选）",
+								},
+							},
+							"required": []string{"local_path"},
+						},
+					},
+					"async": map[string]interface{}{
+						"type":        "boolean",
+						"description": "是否异步上传（可选，默认为 true，即异步上传）。如果设置为 false，则同步上传所有文件。",
+						"default":     true,
+					},
+				},
+				"required": []string{"files"},
+			},
+		},
+		{
+			Name:        "dufs_upload_status",
+			Description: "查询批量上传任务状态",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"job_id": map[string]interface{}{
+						"type":        "string",
+						"description": "批量上传任务 ID",
+					},
+				},
+				"required": []string{"job_id"},
 			},
 		},
 		{
@@ -243,6 +320,7 @@ func NewMCPServer(config Config) *MCPServer {
 		dufsClient: dufsClient,
 		tools:      tools,
 		config:     config,
+		jobs:       make(map[string]*UploadJob),
 	}
 }
 
@@ -274,116 +352,363 @@ func (s *MCPServer) handleToolsCall(params json.RawMessage) (interface{}, error)
 		return nil, fmt.Errorf("invalid parameters: %v", err)
 	}
 
+	var result interface{}
+	var err error
+
 	switch callParams.Name {
 	case "dufs_upload":
-		return s.handleUpload(callParams.Arguments)
+		result, err = s.handleUpload(callParams.Arguments)
+	case "dufs_upload_batch":
+		result, err = s.handleUploadBatch(callParams.Arguments)
+	case "dufs_upload_status":
+		result, err = s.handleUploadStatus(callParams.Arguments)
 	case "dufs_download":
-		return s.handleDownload(callParams.Arguments)
+		result, err = s.handleDownload(callParams.Arguments)
 	case "dufs_delete":
-		return s.handleDelete(callParams.Arguments)
+		result, err = s.handleDelete(callParams.Arguments)
 	case "dufs_list":
-		return s.handleList(callParams.Arguments)
+		result, err = s.handleList(callParams.Arguments)
 	case "dufs_create_dir":
-		return s.handleCreateDir(callParams.Arguments)
+		result, err = s.handleCreateDir(callParams.Arguments)
 	case "dufs_move":
-		return s.handleMove(callParams.Arguments)
+		result, err = s.handleMove(callParams.Arguments)
 	case "dufs_get_hash":
-		return s.handleGetHash(callParams.Arguments)
+		result, err = s.handleGetHash(callParams.Arguments)
 	case "dufs_download_folder":
-		return s.handleDownloadFolder(callParams.Arguments)
+		result, err = s.handleDownloadFolder(callParams.Arguments)
 	case "dufs_health":
-		return s.handleHealth(callParams.Arguments)
+		result, err = s.handleHealth(callParams.Arguments)
 	default:
 		return nil, fmt.Errorf("unknown tool: %s", callParams.Name)
 	}
-}
 
-func (s *MCPServer) handleUpload(args map[string]interface{}) (interface{}, error) {
-	localPath, ok := args["local_path"].(string)
-	if !ok {
-		return nil, fmt.Errorf("local_path is required")
+	if err != nil {
+		return nil, err
 	}
 
-	// 获取远程路径，如果未指定则自动生成
-	remotePath, _ := args["remote_path"].(string)
-	if remotePath == "" {
-		// 自动创建远程路径：upload_dir/YYYYMMDD/文件名
+	// 根据 MCP 协议，tools/call 的返回格式应该是包含 content 数组的对象
+	resultJSON, err := json.Marshal(result)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal result: %v", err)
+	}
 
-		// 从本地路径提取文件名（支持 Unix 和 Windows 路径分隔符）
-		fileName := localPath
-		if lastSlash := strings.LastIndex(localPath, "/"); lastSlash >= 0 {
-			fileName = localPath[lastSlash+1:]
+	return map[string]interface{}{
+		"content": []map[string]interface{}{
+			{
+				"type": "text",
+				"text": string(resultJSON),
+			},
+		},
+		"isError": false,
+	}, nil
+}
+
+func (s *MCPServer) resolveRemotePath(localPath, remotePath string) string {
+	if remotePath != "" {
+		return strings.TrimPrefix(remotePath, "/")
+	}
+
+	fileName := filepath.Base(localPath)
+	now := time.Now()
+	dateDir := now.Format("20060102")
+
+	baseDir := strings.TrimPrefix(s.config.UploadDir, "/")
+	if baseDir == "" {
+		baseDir = "uploads"
+	}
+
+	return fmt.Sprintf("%s/%s/%s", baseDir, dateDir, fileName)
+}
+
+func (s *MCPServer) ensureRemoteDirectories(remotePath string) error {
+	remoteDir := remotePath
+	if idx := strings.LastIndex(remotePath, "/"); idx >= 0 {
+		remoteDir = remotePath[:idx]
+	}
+
+	if remoteDir == "" {
+		return nil
+	}
+
+	parts := strings.Split(strings.TrimPrefix(remoteDir, "/"), "/")
+	current := ""
+	for _, part := range parts {
+		if part == "" {
+			continue
 		}
-		if lastBackslash := strings.LastIndex(localPath, "\\"); lastBackslash >= 0 {
-			fileName = localPath[lastBackslash+1:]
+		if current == "" {
+			current = part
+		} else {
+			current = current + "/" + part
 		}
 
-		// 获取当前日期，格式：YYYYMMDD（例如：20251125）
-		now := time.Now()
-		dateDir := now.Format("20060102")
-
-		// 构建远程路径：使用配置的 upload_dir 或默认的 "uploads"
-		baseDir := s.config.UploadDir
-		if baseDir == "" {
-			baseDir = "uploads"
+		resp, err := s.dufsClient.makeRequest("MKCOL", current, nil, nil)
+		if err != nil {
+			return fmt.Errorf("failed to create remote directory %s: %w", current, err)
 		}
-		// 确保 baseDir 不以 / 开头，因为 makeRequest 会处理路径拼接
-		baseDir = strings.TrimPrefix(baseDir, "/")
+		func() {
+			defer resp.Body.Close()
+			if resp.StatusCode >= 400 && resp.StatusCode != http.StatusMethodNotAllowed {
+				body, _ := io.ReadAll(resp.Body)
+				err = fmt.Errorf("create directory failed with status %d: %s", resp.StatusCode, string(body))
+			}
+		}()
+		if err != nil {
+			return err
+		}
+	}
 
-		// 生成完整路径：例如 uploads/20251125/file.txt
-		remotePath = fmt.Sprintf("%s/%s/%s", baseDir, dateDir, fileName)
+	return nil
+}
+
+func (s *MCPServer) performUpload(localPath, remotePath string) (string, int, error) {
+	if localPath == "" {
+		return "", 0, fmt.Errorf("local_path is required")
+	}
+
+	finalRemotePath := s.resolveRemotePath(localPath, remotePath)
+
+	if err := s.ensureRemoteDirectories(finalRemotePath); err != nil {
+		return "", 0, err
 	}
 
 	file, err := os.Open(localPath)
 	if err != nil {
-		return nil, fmt.Errorf("failed to open file: %v", err)
+		return "", 0, fmt.Errorf("failed to open file: %v", err)
 	}
 	defer file.Close()
 
-	// 确保远程路径的目录存在（递归创建）
-	remoteDir := remotePath
-	if lastSlash := strings.LastIndex(remotePath, "/"); lastSlash >= 0 {
-		remoteDir = remotePath[:lastSlash]
-	}
-	if remoteDir != "" {
-		// 递归创建目录路径
-		parts := strings.Split(strings.TrimPrefix(remoteDir, "/"), "/")
-		currentPath := ""
-		for _, part := range parts {
-			if part == "" {
-				continue
-			}
-			if currentPath == "" {
-				currentPath = part
-			} else {
-				currentPath = currentPath + "/" + part
-			}
-			// 尝试创建目录（如果不存在）
-			resp, err := s.dufsClient.makeRequest("MKCOL", currentPath, nil, nil)
-			if err == nil {
-				resp.Body.Close()
-				// 忽略 405 错误（Method Not Allowed），说明目录已存在
-			}
-		}
-	}
-
-	resp, err := s.dufsClient.makeRequest("PUT", remotePath, file, nil)
+	resp, err := s.dufsClient.makeRequest("PUT", finalRemotePath, file, nil)
 	if err != nil {
-		return nil, fmt.Errorf("upload failed: %v", err)
+		return "", 0, fmt.Errorf("upload failed: %v", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 400 {
 		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("upload failed with status %d: %s", resp.StatusCode, string(body))
+		return "", resp.StatusCode, fmt.Errorf("upload failed with status %d: %s", resp.StatusCode, string(body))
+	}
+
+	return finalRemotePath, resp.StatusCode, nil
+}
+
+func (s *MCPServer) handleUpload(args map[string]interface{}) (interface{}, error) {
+	localPath, ok := args["local_path"].(string)
+	if !ok || localPath == "" {
+		return nil, fmt.Errorf("local_path is required")
+	}
+
+	remotePath, _ := args["remote_path"].(string)
+	async, _ := args["async"].(bool)
+
+	// 如果 async=true，使用异步上传
+	if async {
+		// 创建单个文件的任务
+		tasks := []UploadTaskResult{
+			{
+				LocalPath:           localPath,
+				RequestedRemotePath: remotePath,
+				Status:              "pending",
+			},
+		}
+
+		jobID := fmt.Sprintf("job-%d", time.Now().UnixNano())
+		job := &UploadJob{
+			ID:        jobID,
+			Status:    "pending",
+			CreatedAt: time.Now(),
+			Tasks:     tasks,
+		}
+
+		s.jobsMutex.Lock()
+		s.jobs[jobID] = job
+		s.jobsMutex.Unlock()
+
+		go s.runUploadJob(job)
+
+		return map[string]interface{}{
+			"success":    true,
+			"job_id":     jobID,
+			"status":     "pending",
+			"task_count": 1,
+		}, nil
+	}
+
+	// 同步上传
+	resolvedPath, statusCode, err := s.performUpload(localPath, remotePath)
+	if err != nil {
+		return nil, err
 	}
 
 	return map[string]interface{}{
 		"success":     true,
-		"message":     fmt.Sprintf("File uploaded successfully to %s", remotePath),
-		"remote_path": remotePath,
-		"status":      resp.StatusCode,
+		"message":     fmt.Sprintf("File uploaded successfully to %s", resolvedPath),
+		"remote_path": resolvedPath,
+		"status":      statusCode,
 	}, nil
+}
+
+func (s *MCPServer) handleUploadBatch(args map[string]interface{}) (interface{}, error) {
+	filesParam, ok := args["files"].([]interface{})
+	if !ok || len(filesParam) == 0 {
+		return nil, fmt.Errorf("files is required and must contain at least one entry")
+	}
+
+	async, ok := args["async"].(bool)
+	if !ok {
+		async = true // 默认异步
+	}
+
+	tasks := make([]UploadTaskResult, 0, len(filesParam))
+	for _, item := range filesParam {
+		fileArgs, ok := item.(map[string]interface{})
+		if !ok {
+			return nil, fmt.Errorf("invalid file entry: %+v", item)
+		}
+		localPath, ok := fileArgs["local_path"].(string)
+		if !ok || localPath == "" {
+			return nil, fmt.Errorf("local_path is required for each file")
+		}
+		remotePath, _ := fileArgs["remote_path"].(string)
+
+		tasks = append(tasks, UploadTaskResult{
+			LocalPath:           localPath,
+			RequestedRemotePath: remotePath,
+			Status:              "pending",
+		})
+	}
+
+	// 如果 async=false，同步上传所有文件
+	if !async {
+		results := make([]map[string]interface{}, 0, len(tasks))
+		for _, task := range tasks {
+			resolvedPath, statusCode, err := s.performUpload(task.LocalPath, task.RequestedRemotePath)
+			if err != nil {
+				results = append(results, map[string]interface{}{
+					"local_path":  task.LocalPath,
+					"remote_path": task.RequestedRemotePath,
+					"success":     false,
+					"error":       err.Error(),
+					"status":      statusCode,
+				})
+			} else {
+				results = append(results, map[string]interface{}{
+					"local_path":  task.LocalPath,
+					"remote_path": resolvedPath,
+					"success":     true,
+					"status":      statusCode,
+				})
+			}
+		}
+
+		// 检查是否有失败的任务
+		allSuccess := true
+		for _, result := range results {
+			if !result["success"].(bool) {
+				allSuccess = false
+				break
+			}
+		}
+
+		return map[string]interface{}{
+			"success": allSuccess,
+			"results": results,
+			"count":   len(results),
+		}, nil
+	}
+
+	// 异步上传
+	jobID := fmt.Sprintf("job-%d", time.Now().UnixNano())
+	job := &UploadJob{
+		ID:        jobID,
+		Status:    "pending",
+		CreatedAt: time.Now(),
+		Tasks:     tasks,
+	}
+
+	s.jobsMutex.Lock()
+	s.jobs[jobID] = job
+	s.jobsMutex.Unlock()
+
+	go s.runUploadJob(job)
+
+	return map[string]interface{}{
+		"success":    true,
+		"job_id":     jobID,
+		"status":     "pending",
+		"task_count": len(tasks),
+	}, nil
+}
+
+func (s *MCPServer) handleUploadStatus(args map[string]interface{}) (interface{}, error) {
+	jobID, ok := args["job_id"].(string)
+	if !ok || jobID == "" {
+		return nil, fmt.Errorf("job_id is required")
+	}
+
+	s.jobsMutex.RLock()
+	job, exists := s.jobs[jobID]
+	if !exists {
+		s.jobsMutex.RUnlock()
+		return nil, fmt.Errorf("job %s not found", jobID)
+	}
+
+	jobCopy := copyJob(job)
+	s.jobsMutex.RUnlock()
+
+	return map[string]interface{}{
+		"success": true,
+		"job":     jobCopy,
+	}, nil
+}
+
+func copyJob(job *UploadJob) UploadJob {
+	jobCopy := *job
+	jobCopy.Tasks = make([]UploadTaskResult, len(job.Tasks))
+	copy(jobCopy.Tasks, job.Tasks)
+	return jobCopy
+}
+
+func (s *MCPServer) runUploadJob(job *UploadJob) {
+	s.jobsMutex.Lock()
+	job.Status = "running"
+	s.jobsMutex.Unlock()
+
+	for i := range job.Tasks {
+		s.jobsMutex.Lock()
+		job.Tasks[i].Status = "running"
+		job.Tasks[i].StartedAt = time.Now()
+		localPath := job.Tasks[i].LocalPath
+		requestedRemote := job.Tasks[i].RequestedRemotePath
+		s.jobsMutex.Unlock()
+
+		resolvedPath, statusCode, err := s.performUpload(localPath, requestedRemote)
+
+		s.jobsMutex.Lock()
+		if err != nil {
+			job.Tasks[i].Status = "failed"
+			job.Tasks[i].Error = err.Error()
+			job.Tasks[i].HTTPStatus = statusCode
+			job.Tasks[i].CompletedAt = time.Now()
+			job.Status = "failed"
+			job.Error = err.Error()
+			job.CompletedAt = time.Now()
+			s.jobsMutex.Unlock()
+			return
+		}
+
+		job.Tasks[i].Status = "succeeded"
+		job.Tasks[i].ResolvedRemotePath = resolvedPath
+		job.Tasks[i].Message = fmt.Sprintf("uploaded to %s", resolvedPath)
+		job.Tasks[i].HTTPStatus = statusCode
+		job.Tasks[i].CompletedAt = time.Now()
+		s.jobsMutex.Unlock()
+	}
+
+	s.jobsMutex.Lock()
+	job.Status = "completed"
+	job.CompletedAt = time.Now()
+	s.jobsMutex.Unlock()
 }
 
 func (s *MCPServer) handleDownload(args map[string]interface{}) (interface{}, error) {
@@ -512,6 +837,15 @@ func (s *MCPServer) handleCreateDir(args map[string]interface{}) (interface{}, e
 		return nil, fmt.Errorf("create directory failed: %v", err)
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusMethodNotAllowed {
+		// 405 表示目录已存在，对调用方来说可以视为成功
+		return map[string]interface{}{
+			"success": true,
+			"message": fmt.Sprintf("Directory %s already exists", path),
+			"status":  resp.StatusCode,
+		}, nil
+	}
 
 	if resp.StatusCode >= 400 {
 		body, _ := io.ReadAll(resp.Body)

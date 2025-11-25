@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dufs MCP Server - 下载页面</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+            padding: 40px;
+        }
+        h1 {
+            color: #667eea;
+            margin-bottom: 10px;
+            font-size: 2.5em;
+        }
+        .subtitle {
+            color: #666;
+            margin-bottom: 30px;
+            font-size: 1.1em;
+        }
+        .description {
+            background: #f8f9fa;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 30px;
+            border-left: 4px solid #667eea;
+        }
+        .downloads {
+            margin-top: 30px;
+        }
+        .download-item {
+            background: #f8f9fa;
+            padding: 20px;
+            margin-bottom: 15px;
+            border-radius: 8px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            transition: all 0.3s ease;
+            border: 2px solid transparent;
+        }
+        .download-item:hover {
+            border-color: #667eea;
+            transform: translateX(5px);
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.2);
+        }
+        .download-info {
+            flex: 1;
+        }
+        .download-name {
+            font-weight: 600;
+            color: #333;
+            margin-bottom: 5px;
+            font-size: 1.1em;
+        }
+        .download-desc {
+            color: #666;
+            font-size: 0.9em;
+        }
+        .download-btn {
+            background: #667eea;
+            color: white;
+            padding: 12px 24px;
+            border-radius: 6px;
+            text-decoration: none;
+            font-weight: 600;
+            transition: all 0.3s ease;
+            border: none;
+            cursor: pointer;
+        }
+        .download-btn:hover {
+            background: #5568d3;
+            transform: scale(1.05);
+        }
+        .config-section {
+            margin-top: 40px;
+            padding-top: 30px;
+            border-top: 2px solid #eee;
+        }
+        .config-code {
+            background: #2d2d2d;
+            color: #f8f8f2;
+            padding: 20px;
+            border-radius: 8px;
+            overflow-x: auto;
+            font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+            font-size: 0.9em;
+            line-height: 1.6;
+        }
+        .badge {
+            display: inline-block;
+            background: #667eea;
+            color: white;
+            padding: 4px 12px;
+            border-radius: 12px;
+            font-size: 0.85em;
+            margin-left: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🚀 Dufs MCP Server</h1>
+        <p class="subtitle">基于 dufs API 封装的 MCP (Model Context Protocol) Server</p>
+        
+        <div class="description">
+            <p><strong>Dufs MCP Server</strong> 是一个功能强大的文件服务器 MCP 工具，支持文件上传、下载、删除、搜索等操作。</p>
+            <p style="margin-top: 10px;">所有配置通过环境变量传入，支持 stdio 和 HTTP/SSE 两种运行模式。</p>
+        </div>
+
+        <div class="downloads">
+            <h2>📦 下载</h2>
+            <p style="color: #666; margin-bottom: 20px;">选择适合您系统的版本：</p>
+            
+            <div class="download-item">
+                <div class="download-info">
+                    <div class="download-name">Linux (AMD64) <span class="badge">推荐</span></div>
+                    <div class="download-desc">适用于大多数 Linux 服务器和桌面系统</div>
+                </div>
+                <a href="dufs-mcp-server-linux-amd64" class="download-btn" download>下载</a>
+            </div>
+
+            <div class="download-item">
+                <div class="download-info">
+                    <div class="download-name">Linux (ARM64)</div>
+                    <div class="download-desc">适用于 ARM 架构的 Linux 系统（如树莓派、云服务器）</div>
+                </div>
+                <a href="dufs-mcp-server-linux-arm64" class="download-btn" download>下载</a>
+            </div>
+
+            <div class="download-item">
+                <div class="download-info">
+                    <div class="download-name">macOS (AMD64)</div>
+                    <div class="download-desc">适用于 Intel 芯片的 Mac</div>
+                </div>
+                <a href="dufs-mcp-server-darwin-amd64" class="download-btn" download>下载</a>
+            </div>
+
+            <div class="download-item">
+                <div class="download-info">
+                    <div class="download-name">macOS (ARM64) <span class="badge">Apple Silicon</span></div>
+                    <div class="download-desc">适用于 Apple Silicon 芯片的 Mac（M1/M2/M3）</div>
+                </div>
+                <a href="dufs-mcp-server-darwin-arm64" class="download-btn" download>下载</a>
+            </div>
+
+            <div class="download-item">
+                <div class="download-info">
+                    <div class="download-name">Windows (AMD64)</div>
+                    <div class="download-desc">适用于 64 位 Windows 系统</div>
+                </div>
+                <a href="dufs-mcp-server-windows-amd64.exe" class="download-btn" download>下载</a>
+            </div>
+        </div>
+
+        <div class="config-section">
+            <h2>⚙️ 配置示例</h2>
+            <p style="color: #666; margin-bottom: 15px;">在 MCP 客户端（如 Cursor）中配置：</p>
+            <div class="config-code">
+{
+  "mcpServers": {
+    "dufs": {
+      "command": "./dufs-mcp-server",
+      "env": {
+        "DUFS_URL": "http://127.0.0.1:5000",
+        "DUFS_USERNAME": "admin",
+        "DUFS_PASSWORD": "password",
+        "DUFS_UPLOAD_DIR": "/uploads",
+        "MCP_MODE": "stdio"
+      }
+    }
+  }
+}
+            </div>
+        </div>
+
+        <div class="config-section">
+            <h2>📚 功能特性</h2>
+            <ul style="margin-left: 20px; color: #666; line-height: 2;">
+                <li>✅ 文件上传（支持自动按日期创建目录）</li>
+                <li>✅ 文件下载</li>
+                <li>✅ 文件/目录删除</li>
+                <li>✅ 目录列表和搜索</li>
+                <li>✅ 创建目录、移动/重命名文件</li>
+                <li>✅ 获取文件哈希值</li>
+                <li>✅ 下载文件夹为 zip</li>
+                <li>✅ 健康检查</li>
+            </ul>
+        </div>
+    </div>
+
+    <script>
+        // 动态获取当前路径，确保下载链接正确
+        (function() {
+            const basePath = window.location.pathname.replace(/\/[^\/]*$/, '');
+            const downloadLinks = document.querySelectorAll('.download-btn');
+            
+            downloadLinks.forEach(link => {
+                const filename = link.getAttribute('href');
+                // 如果路径不是以 / 开头，使用相对路径
+                if (!filename.startsWith('/')) {
+                    link.href = basePath + '/' + filename;
+                }
+            });
+        })();
+    </script>
+</body>
+</html>
+

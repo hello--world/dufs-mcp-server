@@ -61,6 +61,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      id-token: write
     steps:
       - uses: actions/checkout@v4
 
@@ -72,7 +73,12 @@ jobs:
       - name: Flatten artifacts and create checksums
         run: |
           mkdir -p release/flat
-          find release -type f -name "dufs-mcp-server-*" ! -name "*.sha256" -exec cp {} release/flat/ \;
+          find release -type f -name "dufs-mcp-server-*" ! -name "*.sha256" | while read file; do
+            filename=$(basename "$file")
+            if [ ! -f "release/flat/$filename" ]; then
+              cp "$file" "release/flat/$filename"
+            fi
+          done
           cd release/flat
           for file in *; do
             if [ -f "$file" ]; then
@@ -87,6 +93,5 @@ jobs:
         with:
           files: release/**/*
           generate_release_notes: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.GITHUB_TOKEN }}
 

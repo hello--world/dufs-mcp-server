@@ -13,33 +13,19 @@ on:
 
 jobs:
   build:
+    runs-on: ubuntu-latest
     strategy:
       matrix:
-        include:
-          - goos: linux
-            goarch: amd64
-            name: linux-amd64
-          - goos: linux
-            goarch: arm64
-            name: linux-arm64
-          - goos: darwin
-            goarch: amd64
-            name: darwin-amd64
-          - goos: darwin
-            goarch: arm64
-            name: darwin-arm64
-          - goos: windows
-            goarch: amd64
-            name: windows-amd64
-            ext: .exe
+        goos: [linux, windows, darwin]
+        goarch: [amd64, arm64]
+        exclude:
           - goos: windows
             goarch: arm64
-            name: windows-arm64
-            ext: .exe
-
-    runs-on: ubuntu-latest
+          - goos: darwin
+            goarch: arm64
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -50,18 +36,20 @@ jobs:
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
-          TAG_NAME: ${{ github.event.inputs.tag || github.ref_name }}
         run: |
-          OUTPUT="dufs-mcp-server${{ matrix.ext }}"
-          go build -trimpath -ldflags="-s -w" -o "$OUTPUT" main.go
-          mkdir -p release
-          mv "$OUTPUT" "release/dufs-mcp-server-${{ matrix.name }}${{ matrix.ext }}"
+          export EXT=""
+          if [ "${{ matrix.goos }}" == "windows" ]; then
+            export EXT=".exe"
+          fi
+          go build -trimpath -ldflags="-s -w" -o dufs-mcp-server${EXT} main.go
+          mkdir -p dist
+          mv dufs-mcp-server${EXT} dist/dufs-mcp-server-${GOOS}-${GOARCH}${EXT}
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: dufs-mcp-server-${{ matrix.name }}
-          path: release/dufs-mcp-server-${{ matrix.name }}${{ matrix.ext }}
+          name: dufs-mcp-server-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/dufs-mcp-server-*
 
   release:
     needs: build
@@ -77,33 +65,21 @@ jobs:
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
-          path: release
+          path: dist
 
-      - name: Flatten artifacts and create checksums
+      - name: Create checksums
         run: |
-          mkdir -p release/flat
-          find release -type f -name "dufs-mcp-server-*" ! -name "*.sha256" | while read file; do
-            filename=$(basename "$file")
-            if [ ! -f "release/flat/$filename" ]; then
-              cp "$file" "release/flat/$filename"
-            fi
+          cd dist
+          find . -type f -name "dufs-mcp-server-*" ! -name "*.sha256" | while read file; do
+            sha256sum "$file" > "$file.sha256"
           done
-          cd release/flat
-          for file in *; do
-            if [ -f "$file" ]; then
-              sha256sum "$file" > "$file.sha256"
-            fi
-          done
-          mv release/flat/* release/ 2>/dev/null || true
-          rmdir release/flat 2>/dev/null || true
 
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
-          files: release/**/*
+          files: dist/**/*
           generate_release_notes: true
           draft: false
           prerelease: false
           tag_name: ${{ github.event.inputs.tag || github.ref_name }}
           token: ${{ secrets.GITHUB_TOKEN }}
-

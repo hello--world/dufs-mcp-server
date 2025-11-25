@@ -68,20 +68,24 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: release
-          pattern: dufs-mcp-server-*
-          merge-multiple: false
 
-      - name: Create checksums
+      - name: Flatten artifacts and create checksums
         run: |
-          cd release
-          find . -type f -name "dufs-mcp-server-*" ! -name "*.sha256" | while read file; do
-            sha256sum "$file" > "$file.sha256"
+          mkdir -p release/flat
+          find release -type f -name "dufs-mcp-server-*" ! -name "*.sha256" -exec cp {} release/flat/ \;
+          cd release/flat
+          for file in *; do
+            if [ -f "$file" ]; then
+              sha256sum "$file" > "$file.sha256"
+            fi
           done
+          mv release/flat/* release/ 2>/dev/null || true
+          rmdir release/flat 2>/dev/null || true
 
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
-          files: release/*
+          files: release/**/*
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

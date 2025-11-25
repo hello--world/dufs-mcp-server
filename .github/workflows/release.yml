@@ -68,11 +68,13 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: release
+          pattern: dufs-mcp-server-*
+          merge-multiple: false
 
       - name: Create checksums
         run: |
           cd release
-          for file in *; do
+          find . -type f -name "dufs-mcp-server-*" ! -name "*.sha256" | while read file; do
             sha256sum "$file" > "$file.sha256"
           done
 

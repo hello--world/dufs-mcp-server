@@ -10,7 +10,7 @@ echo "Building dufs-mcp-server..."
 rm -f dufs-mcp-server
 
 # 使用标准构建，确保包含所有必要的 load commands
-go build -o dufs-mcp-server main.go
+go build -o dufs-mcp-server .
 
 # 确保可执行
 chmod +x dufs-mcp-server

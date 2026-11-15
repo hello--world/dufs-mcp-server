@@ -2,6 +2,10 @@ package main
 
 import (
 	"bufio"
+	"crypto/subtle"
+	"encoding/hex"
+	"net"
+	"net/url"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -80,7 +84,8 @@ func NewDufsClient(config Config) *DufsClient {
 		Username: config.Username,
 		Password: config.Password,
 		Client: &http.Client{
-			Timeout: 30 * time.Second,
+			Timeout: 10 * time.Minute,
+			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 		},
 	}
 }
@@ -112,6 +117,7 @@ type MCPServer struct {
 	config     Config
 	jobs       map[string]*UploadJob
 	jobsMutex  sync.RWMutex
+    uploadSlots chan struct{}
 }
 
 func NewMCPServer(config Config) *MCPServer {
@@ -321,6 +327,7 @@ func NewMCPServer(config Config) *MCPServer {
 		tools:      tools,
 		config:     config,
 		jobs:       make(map[string]*UploadJob),
+        uploadSlots: make(chan struct{}, 4),
 	}
 }
 
@@ -332,15 +339,34 @@ func (s *MCPServer) handleInitialize(params json.RawMessage) (interface{}, error
 		},
 		"serverInfo": map[string]interface{}{
 			"name":    "dufs-mcp-server",
-			"version": "1.0.0",
+			"version": "1.1.0",
 		},
 	}, nil
 }
 
 func (s *MCPServer) handleToolsList(params json.RawMessage) (interface{}, error) {
-	return map[string]interface{}{
-		"tools": s.tools,
-	}, nil
+    available := make([]MCPTool, 0, len(s.tools))
+    for _, t := range s.tools {
+        switch t.Name {
+        case "dufs_upload", "dufs_upload_batch", "dufs_upload_status", "dufs_create_dir":
+            if !enabled("DUFS_MCP_ENABLE_UPLOAD") { continue }
+        case "dufs_delete":
+            if !enabled("DUFS_MCP_ENABLE_DELETE") { continue }
+        case "dufs_move":
+            if !enabled("DUFS_MCP_ENABLE_MOVE") { continue }
+        case "dufs_download", "dufs_download_folder":
+            if os.Getenv("DUFS_LOCAL_ROOT") == "" { continue }
+        }
+        available = append(available, t)
+    }
+    return map[string]interface{}{"tools": available}, nil
+}
+
+func toolCallError(err error) (interface{}, error) {
+    return map[string]interface{}{
+        "content": []map[string]string{{"type": "text", "text": err.Error()}},
+        "isError": true,
+    }, nil
 }
 
 func (s *MCPServer) handleToolsCall(params json.RawMessage) (interface{}, error) {
@@ -352,10 +378,14 @@ func (s *MCPServer) handleToolsCall(params json.RawMessage) (interface{}, error)
 		return nil, fmt.Errorf("invalid parameters: %v", err)
 	}
 
-	var result interface{}
-	var err error
+	if callParams.Arguments == nil { callParams.Arguments = map[string]interface{}{} }
+	if err := s.authorizeTool(callParams.Name, callParams.Arguments); err != nil {
+        return toolCallError(err)
+    }
+    var result interface{}
+    var err error
 
-	switch callParams.Name {
+    switch callParams.Name {
 	case "dufs_upload":
 		result, err = s.handleUpload(callParams.Arguments)
 	case "dufs_upload_batch":
@@ -383,10 +413,10 @@ func (s *MCPServer) handleToolsCall(params json.RawMessage) (interface{}, error)
 	}
 
 	if err != nil {
-		return nil, err
-	}
+        return toolCallError(err)
+    }
 
-	// 根据 MCP 协议，tools/call 的返回格式应该是包含 content 数组的对象
+    // 根据 MCP 协议，tools/call 的返回格式应该是包含 content 数组的对象
 	resultJSON, err := json.Marshal(result)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal result: %v", err)
@@ -399,8 +429,15 @@ func (s *MCPServer) handleToolsCall(params json.RawMessage) (interface{}, error)
 				"text": string(resultJSON),
 			},
 		},
-		"isError": false,
-	}, nil
+		"isError": toolResultFailed(result),
+    }, nil
+}
+
+func toolResultFailed(result interface{}) bool {
+    m, ok := result.(map[string]interface{})
+    if !ok { return false }
+    success, present := m["success"].(bool)
+    return present && !success
 }
 
 func (s *MCPServer) resolveRemotePath(localPath, remotePath string) string {
@@ -412,71 +449,54 @@ func (s *MCPServer) resolveRemotePath(localPath, remotePath string) string {
 	now := time.Now()
 	dateDir := now.Format("20060102")
 
-	baseDir := strings.TrimPrefix(s.config.UploadDir, "/")
-	if baseDir == "" {
-		baseDir = "uploads"
-	}
+	baseDir := s.remoteRoot()
 
 	return fmt.Sprintf("%s/%s/%s", baseDir, dateDir, fileName)
 }
 
 func (s *MCPServer) ensureRemoteDirectories(remotePath string) error {
-	remoteDir := remotePath
-	if idx := strings.LastIndex(remotePath, "/"); idx >= 0 {
-		remoteDir = remotePath[:idx]
-	}
-
-	if remoteDir == "" {
-		return nil
-	}
-
-	parts := strings.Split(strings.TrimPrefix(remoteDir, "/"), "/")
-	current := ""
-	for _, part := range parts {
-		if part == "" {
-			continue
-		}
-		if current == "" {
-			current = part
-		} else {
-			current = current + "/" + part
-		}
-
-		resp, err := s.dufsClient.makeRequest("MKCOL", current, nil, nil)
-		if err != nil {
-			return fmt.Errorf("failed to create remote directory %s: %w", current, err)
-		}
-		func() {
-			defer resp.Body.Close()
-			if resp.StatusCode >= 400 && resp.StatusCode != http.StatusMethodNotAllowed {
-				body, _ := io.ReadAll(resp.Body)
-				err = fmt.Errorf("create directory failed with status %d: %s", resp.StatusCode, string(body))
-			}
-		}()
-		if err != nil {
-			return err
-		}
-	}
-
-	return nil
+    if err := s.validateRemote(remotePath); err != nil { return err }
+    root := s.remoteRoot()
+    remoteDir := remotePath
+    if idx := strings.LastIndex(remotePath, "/"); idx >= 0 { remoteDir = remotePath[:idx] }
+    remoteDir = strings.TrimPrefix(remoteDir, "/")
+    // A project's namespace is provisioned by the Dufs administrator.
+    // An MCP account scoped to /projects/name must not need MKCOL /projects.
+    if remoteDir == root { return nil }
+    if !strings.HasPrefix(remoteDir, root+"/") { return fmt.Errorf("remote directory outside project root") }
+    relative := strings.TrimPrefix(remoteDir, root+"/")
+    current := root
+    for _, part := range strings.Split(relative, "/") {
+        if part == "" { return fmt.Errorf("invalid remote directory") }
+        current += "/" + part
+        resp, err := s.dufsClient.makeRequest("MKCOL", current, nil, nil)
+        if err != nil { return fmt.Errorf("failed to create remote directory: %w", err) }
+        status := resp.StatusCode
+        resp.Body.Close()
+        // Dufs returns 405 for a directory that already exists.
+        if (status < 200 || status >= 300) && status != http.StatusMethodNotAllowed {
+            return fmt.Errorf("failed to create remote directory %s: HTTP %d", current, status)
+        }
+    }
+    return nil
 }
 
 func (s *MCPServer) performUpload(localPath, remotePath string) (string, int, error) {
-	if localPath == "" {
-		return "", 0, fmt.Errorf("local_path is required")
-	}
+	if localPath == "" { return "", 0, fmt.Errorf("local_path is required") }
+    select {
+    case s.uploadSlots <- struct{}{}:
+        defer func() { <-s.uploadSlots }()
+    case <-time.After(30*time.Second):
+        return "", 0, fmt.Errorf("MCP upload concurrency limit reached")
+    }
 
-	finalRemotePath := s.resolveRemotePath(localPath, remotePath)
+    finalRemotePath := s.resolveRemotePath(localPath, remotePath)
+    if err := s.validateRemote(finalRemotePath); err != nil { return "", 0, err }
 
-	if err := s.ensureRemoteDirectories(finalRemotePath); err != nil {
-		return "", 0, err
-	}
-
-	file, err := os.Open(localPath)
-	if err != nil {
-		return "", 0, fmt.Errorf("failed to open file: %v", err)
-	}
-	defer file.Close()
+    file, err := openScopedInput(localPath)
+    if err != nil { return "", 0, fmt.Errorf("invalid upload source: %v", err) }
+    defer file.Close()
+    if err := s.ensureRemoteDirectories(finalRemotePath); err != nil { return "", 0, err }
 
 	resp, err := s.dufsClient.makeRequest("PUT", finalRemotePath, file, nil)
 	if err != nil {
@@ -484,10 +504,9 @@ func (s *MCPServer) performUpload(localPath, remotePath string) (string, int, er
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode >= 400 {
-		body, _ := io.ReadAll(resp.Body)
-		return "", resp.StatusCode, fmt.Errorf("upload failed with status %d: %s", resp.StatusCode, string(body))
-	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+        return "", resp.StatusCode, fmt.Errorf("upload failed with HTTP %d", resp.StatusCode)
+    }
 
 	return finalRemotePath, resp.StatusCode, nil
 }
@@ -521,8 +540,20 @@ func (s *MCPServer) handleUpload(args map[string]interface{}) (interface{}, erro
 		}
 
 		s.jobsMutex.Lock()
-		s.jobs[jobID] = job
-		s.jobsMutex.Unlock()
+    if len(s.jobs) >= 128 {
+        for k, old := range s.jobs {
+            if old.Status == "completed" || old.Status == "failed" {
+                delete(s.jobs, k)
+            }
+            if len(s.jobs) < 96 { break }
+        }
+    }
+    if len(s.jobs) >= 128 {
+        s.jobsMutex.Unlock()
+        return nil, fmt.Errorf("upload task capacity reached")
+    }
+    s.jobs[jobID] = job
+    s.jobsMutex.Unlock()
 
 		go s.runUploadJob(job)
 
@@ -627,8 +658,20 @@ func (s *MCPServer) handleUploadBatch(args map[string]interface{}) (interface{},
 	}
 
 	s.jobsMutex.Lock()
-	s.jobs[jobID] = job
-	s.jobsMutex.Unlock()
+    if len(s.jobs) >= 128 {
+        for k, old := range s.jobs {
+            if old.Status == "completed" || old.Status == "failed" {
+                delete(s.jobs, k)
+            }
+            if len(s.jobs) < 96 { break }
+        }
+    }
+    if len(s.jobs) >= 128 {
+        s.jobsMutex.Unlock()
+        return nil, fmt.Errorf("upload task capacity reached")
+    }
+    s.jobs[jobID] = job
+    s.jobsMutex.Unlock()
 
 	go s.runUploadJob(job)
 
@@ -712,46 +755,20 @@ func (s *MCPServer) runUploadJob(job *UploadJob) {
 }
 
 func (s *MCPServer) handleDownload(args map[string]interface{}) (interface{}, error) {
-	remotePath, ok := args["remote_path"].(string)
-	if !ok {
-		return nil, fmt.Errorf("remote_path is required")
-	}
-
-	localPath, _ := args["local_path"].(string)
-	if localPath == "" {
-		localPath = strings.TrimPrefix(strings.TrimPrefix(remotePath, "/"), "./")
-		localPath = strings.ReplaceAll(localPath, "/", "_")
-	}
-
-	resp, err := s.dufsClient.makeRequest("GET", remotePath, nil, nil)
-	if err != nil {
-		return nil, fmt.Errorf("download failed: %v", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode >= 400 {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("download failed with status %d: %s", resp.StatusCode, string(body))
-	}
-
-	file, err := os.Create(localPath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create local file: %v", err)
-	}
-	defer file.Close()
-
-	written, err := io.Copy(file, resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to write file: %v", err)
-	}
-
-	return map[string]interface{}{
-		"success":    true,
-		"message":    fmt.Sprintf("File downloaded successfully to %s", localPath),
-		"local_path": localPath,
-		"size_bytes": written,
-		"status":     resp.StatusCode,
-	}, nil
+    remotePath, ok := args["remote_path"].(string)
+    if !ok || s.validateRemote(remotePath) != nil { return nil, fmt.Errorf("invalid remote_path") }
+    localPath, ok := args["local_path"].(string)
+    if !ok || localPath == "" { return nil, fmt.Errorf("local_path is required") }
+    resp, err := s.dufsClient.makeRequest("GET", remotePath, nil, nil)
+    if err != nil { return nil, fmt.Errorf("download failed: %w", err) }
+    defer resp.Body.Close()
+    if resp.StatusCode != 200 { return nil, fmt.Errorf("download failed with HTTP %d", resp.StatusCode) }
+    if resp.ContentLength > maxMCPFileBytes { return nil, fmt.Errorf("download exceeds 1 GiB limit") }
+    written, err := copyScopedOutput(localPath, resp.Body)
+    if err != nil { return nil, fmt.Errorf("download failed: %w", err) }
+    return map[string]interface{}{
+        "success": true, "local_path": localPath, "size_bytes": written, "status": resp.StatusCode,
+    }, nil
 }
 
 func (s *MCPServer) handleDelete(args map[string]interface{}) (interface{}, error) {
@@ -766,10 +783,7 @@ func (s *MCPServer) handleDelete(args map[string]interface{}) (interface{}, erro
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode >= 400 {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("delete failed with status %d: %s", resp.StatusCode, string(body))
-	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 { return nil, fmt.Errorf("delete failed with HTTP %d", resp.StatusCode) }
 
 	return map[string]interface{}{
 		"success": true,
@@ -787,28 +801,23 @@ func (s *MCPServer) handleList(args map[string]interface{}) (interface{}, error)
 	query, _ := args["query"].(string)
 	format, _ := args["format"].(string)
 
-	url := path
-	if query != "" {
-		url += "?q=" + query
-	} else if format != "" {
-		url += "?" + format
-	}
+	requestPath := path
+    params := []string{}
+    if query != "" { params = append(params, "q="+url.QueryEscape(query)) }
+    if format != "" { params = append(params, format) }
+    if len(params) != 0 { requestPath += "?" + strings.Join(params, "&") }
 
-	resp, err := s.dufsClient.makeRequest("GET", url, nil, nil)
+    resp, err := s.dufsClient.makeRequest("GET", requestPath, nil, nil)
 	if err != nil {
 		return nil, fmt.Errorf("list failed: %v", err)
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode >= 400 {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("list failed with status %d: %s", resp.StatusCode, string(body))
-	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 { return nil, fmt.Errorf("list failed with HTTP %d", resp.StatusCode) }
 
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read response: %v", err)
-	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, (2<<20)+1))
+    if err != nil { return nil, fmt.Errorf("failed to read response: %v", err) }
+    if len(body) > 2<<20 { return nil, fmt.Errorf("directory listing exceeds 2 MiB limit") }
 
 	var result interface{}
 	if format == "json" {
@@ -839,7 +848,13 @@ func (s *MCPServer) handleCreateDir(args map[string]interface{}) (interface{}, e
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusMethodNotAllowed {
-		// 405 表示目录已存在，对调用方来说可以视为成功
+        // Dufs also returns 405 if MKCOL is unsupported; check the directory exists.
+        check, err := s.dufsClient.makeRequest("GET", path+"?json", nil, nil)
+        if err != nil { return nil, fmt.Errorf("directory check failed: %w", err) }
+        checkStatus := check.StatusCode
+        check.Body.Close()
+        if checkStatus != 200 { return nil, fmt.Errorf("MKCOL denied: HTTP 405, directory check HTTP %d", checkStatus) }
+        // 405 is acceptable only after independent existence verification.
 		return map[string]interface{}{
 			"success": true,
 			"message": fmt.Sprintf("Directory %s already exists", path),
@@ -847,10 +862,7 @@ func (s *MCPServer) handleCreateDir(args map[string]interface{}) (interface{}, e
 		}, nil
 	}
 
-	if resp.StatusCode >= 400 {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("create directory failed with status %d: %s", resp.StatusCode, string(body))
-	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 { return nil, fmt.Errorf("create directory failed with HTTP %d", resp.StatusCode) }
 
 	return map[string]interface{}{
 		"success": true,
@@ -880,10 +892,7 @@ func (s *MCPServer) handleMove(args map[string]interface{}) (interface{}, error)
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode >= 400 {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("move failed with status %d: %s", resp.StatusCode, string(body))
-	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 { return nil, fmt.Errorf("move failed with HTTP %d", resp.StatusCode) }
 
 	return map[string]interface{}{
 		"success": true,
@@ -904,65 +913,36 @@ func (s *MCPServer) handleGetHash(args map[string]interface{}) (interface{}, err
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode >= 400 {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("get hash failed with status %d: %s", resp.StatusCode, string(body))
-	}
+	if resp.StatusCode != 200 { return nil, fmt.Errorf("get hash failed with HTTP %d; check Dufs --allow-hash", resp.StatusCode) }
 
-	hash, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read hash: %v", err)
-	}
+	hash, err := io.ReadAll(io.LimitReader(resp.Body, 512))
+	if err != nil { return nil, fmt.Errorf("failed to read hash: %v", err) }
+	sum := strings.TrimSpace(string(hash))
+	decoded, err := hex.DecodeString(sum)
+	if err != nil || len(decoded) != 32 { return nil, fmt.Errorf("dufs did not return a valid SHA-256 digest") }
 
 	return map[string]interface{}{
 		"success": true,
-		"hash":    strings.TrimSpace(string(hash)),
+		"hash":    sum,
 		"path":    path,
 	}, nil
 }
 
 func (s *MCPServer) handleDownloadFolder(args map[string]interface{}) (interface{}, error) {
-	remotePath, ok := args["remote_path"].(string)
-	if !ok {
-		return nil, fmt.Errorf("remote_path is required")
-	}
-
-	localPath, _ := args["local_path"].(string)
-	if localPath == "" {
-		folderName := strings.TrimPrefix(strings.TrimPrefix(remotePath, "/"), "./")
-		folderName = strings.ReplaceAll(folderName, "/", "_")
-		localPath = folderName + ".zip"
-	}
-
-	resp, err := s.dufsClient.makeRequest("GET", remotePath+"?zip", nil, nil)
-	if err != nil {
-		return nil, fmt.Errorf("download folder failed: %v", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode >= 400 {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("download folder failed with status %d: %s", resp.StatusCode, string(body))
-	}
-
-	file, err := os.Create(localPath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create local file: %v", err)
-	}
-	defer file.Close()
-
-	written, err := io.Copy(file, resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to write file: %v", err)
-	}
-
-	return map[string]interface{}{
-		"success":    true,
-		"message":    fmt.Sprintf("Folder downloaded successfully to %s", localPath),
-		"local_path": localPath,
-		"size_bytes": written,
-		"status":     resp.StatusCode,
-	}, nil
+    remotePath, ok := args["remote_path"].(string)
+    if !ok || s.validateRemote(remotePath) != nil { return nil, fmt.Errorf("invalid remote_path") }
+    localPath, ok := args["local_path"].(string)
+    if !ok || localPath == "" { return nil, fmt.Errorf("local_path is required") }
+    resp, err := s.dufsClient.makeRequest("GET", remotePath+"?zip", nil, nil)
+    if err != nil { return nil, fmt.Errorf("download folder failed: %w", err) }
+    defer resp.Body.Close()
+    if resp.StatusCode != 200 { return nil, fmt.Errorf("download folder failed with HTTP %d", resp.StatusCode) }
+    if resp.ContentLength > maxMCPFileBytes { return nil, fmt.Errorf("archive exceeds 1 GiB limit") }
+    written, err := copyScopedOutput(localPath, resp.Body)
+    if err != nil { return nil, fmt.Errorf("download folder failed: %w", err) }
+    return map[string]interface{}{
+        "success": true, "local_path": localPath, "size_bytes": written, "status": resp.StatusCode,
+    }, nil
 }
 
 func (s *MCPServer) handleHealth(args map[string]interface{}) (interface{}, error) {
@@ -1030,10 +1010,21 @@ func loadConfig() (Config, error) {
 	}
 
 	if config.DufsURL == "" {
-		return config, fmt.Errorf("DUFS_URL environment variable is required")
-	}
-
-	return config, nil
+        return config, fmt.Errorf("DUFS_URL environment variable is required")
+    }
+    u, err := url.Parse(config.DufsURL)
+    if err != nil || (u.Scheme != "http" && u.Scheme != "https") ||
+        u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+        return config, fmt.Errorf("DUFS_URL must be an HTTP(S) URL without embedded credentials or query")
+    }
+    if u.Scheme == "http" && !config.AllowInsecure {
+        host := u.Hostname()
+        ip := net.ParseIP(host)
+        if host != "localhost" && (ip == nil || !ip.IsLoopback()) {
+            return config, fmt.Errorf("DUFS_URL requires HTTPS outside loopback; explicitly opt in with DUFS_ALLOW_INSECURE=true")
+        }
+    }
+    return config, nil
 }
 
 // runStdioMode 运行 stdio 模式（标准 MCP 协议）
@@ -1042,6 +1033,7 @@ func runStdioMode(server *MCPServer) {
 	log.SetOutput(os.Stderr)
 
 	scanner := bufio.NewScanner(os.Stdin)
+	scanner.Buffer(make([]byte, 64*1024), 8*1024*1024)
 	encoder := json.NewEncoder(os.Stdout)
 	encoder.SetEscapeHTML(false)
 
@@ -1092,60 +1084,62 @@ func runStdioMode(server *MCPServer) {
 	}
 }
 
-// runHTTPMode 运行 HTTP/SSE 模式
+// Legacy /message JSON-RPC is authenticated. This is not Streamable HTTP/SSE MCP.
+func newMCPHTTPHandler(server *MCPServer, token string) http.Handler {
+    mux := http.NewServeMux()
+    mux.HandleFunc("/sse", func(w http.ResponseWriter, r *http.Request) {
+        http.Error(w, "SSE MCP transport not implemented; use stdio", http.StatusNotImplemented)
+    })
+    mux.HandleFunc("/message", func(w http.ResponseWriter, r *http.Request) {
+        if r.Method != http.MethodPost {
+            w.Header().Set("Allow", "POST")
+            http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+            return
+        }
+        w.Header().Set("Content-Type", "application/json")
+        dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
+        var msg MCPMessage
+        if err := dec.Decode(&msg); err != nil || msg.JSONRPC != "2.0" || msg.Method == "" {
+            http.Error(w, "invalid JSON-RPC request", http.StatusBadRequest)
+            return
+        }
+        if msg.ID == nil { w.WriteHeader(http.StatusAccepted); return }
+        _ = json.NewEncoder(w).Encode(server.handleMessage(msg))
+    })
+    return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        w.Header().Set("X-Content-Type-Options", "nosniff")
+        w.Header().Set("Cache-Control", "no-store")
+        if r.Header.Get("Origin") != "" {
+            http.Error(w, "browser-origin calls not allowed", http.StatusForbidden)
+            return
+        }
+        auth := r.Header.Get("Authorization")
+        if !strings.HasPrefix(auth, "Bearer ") ||
+            subtle.ConstantTimeCompare([]byte(strings.TrimPrefix(auth, "Bearer ")), []byte(token)) != 1 {
+            http.Error(w, "unauthorized", http.StatusUnauthorized)
+            return
+        }
+        mux.ServeHTTP(w, r)
+    })
+}
+
 func runHTTPMode(server *MCPServer, port string) {
-	// SSE 端点：用于接收服务器推送的消息
-	http.HandleFunc("/sse", func(w http.ResponseWriter, r *http.Request) {
-		// 设置 SSE headers
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.Header().Set("Cache-Control", "no-cache")
-		w.Header().Set("Connection", "keep-alive")
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
-
-		flusher, ok := w.(http.Flusher)
-		if !ok {
-			http.Error(w, "SSE not supported", http.StatusInternalServerError)
-			return
-		}
-
-		// 发送初始连接消息
-		fmt.Fprintf(w, "data: %s\n\n", `{"type":"connection","status":"connected"}`)
-		flusher.Flush()
-
-		// 保持连接打开，等待客户端关闭
-		<-r.Context().Done()
-	})
-
-	// 接收客户端消息的端点
-	http.HandleFunc("/message", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
-
-		if r.Method == "OPTIONS" {
-			w.WriteHeader(http.StatusOK)
-			return
-		}
-
-		if r.Method != "POST" {
-			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-
-		var msg MCPMessage
-		if err := json.NewDecoder(r.Body).Decode(&msg); err != nil {
-			http.Error(w, fmt.Sprintf("Invalid JSON: %v", err), http.StatusBadRequest)
-			return
-		}
-
-		response := server.handleMessage(msg)
-		json.NewEncoder(w).Encode(response)
-	})
-
-	log.Printf("MCP Server (HTTP mode) starting on port %s", port)
-	log.Fatal(http.ListenAndServe(":"+port, nil))
+    token := os.Getenv("MCP_HTTP_TOKEN")
+    if len(token) < 32 { log.Fatal("MCP_HTTP_TOKEN >= 32 characters is required in HTTP mode") }
+    bind := os.Getenv("MCP_HTTP_BIND")
+    if bind == "" { bind = "127.0.0.1:" + port }
+    host, _, err := net.SplitHostPort(bind)
+    if err != nil { log.Fatalf("invalid MCP_HTTP_BIND: %v", err) }
+    ip := net.ParseIP(host)
+    if host != "localhost" && (ip == nil || !ip.IsLoopback()) && !enabled("MCP_HTTP_ALLOW_REMOTE") {
+        log.Fatal("remote binding requires MCP_HTTP_ALLOW_REMOTE=true and authenticated TLS termination")
+    }
+    srv := &http.Server{
+        Addr: bind, Handler: newMCPHTTPHandler(server, token),
+        ReadHeaderTimeout: 10*time.Second, IdleTimeout: 60*time.Second,
+    }
+    log.Printf("Authenticated legacy MCP JSON-RPC listening on %s", bind)
+    log.Fatal(srv.ListenAndServe())
 }
 
 func main() {
@@ -1174,7 +1168,7 @@ func main() {
 		log.Printf("MCP Server (stdio mode) starting")
 		log.Printf("Dufs URL: %s", config.DufsURL)
 		runStdioMode(server)
-	case "http", "sse":
+	case "http":
 		// HTTP/SSE 模式：通过 HTTP 端点通信
 		port := os.Getenv("PORT")
 		if port == "" {
@@ -1183,6 +1177,6 @@ func main() {
 		log.Printf("Dufs URL: %s", config.DufsURL)
 		runHTTPMode(server, port)
 	default:
-		log.Fatalf("Unknown MCP_MODE: %s. Supported modes: stdio, http, sse", mode)
+		log.Fatalf("Unknown MCP_MODE: %s. Supported modes: stdio, http", mode)
 	}
 }

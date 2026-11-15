@@ -1,0 +1,36 @@
+name: MCP 安全与回归检查
+
+# Public repository: never execute untrusted pull_request code on an organization runner.
+on:
+  push:
+    branches:
+      - main
+      - fix/mcp-security-20261115
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: [self-hosted, buildhelpers-linux]
+    timeout-minutes: 20
+    steps:
+      - name: 检出固定提交
+        uses: actions/checkout@v4
+      - name: 配置 Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: 真实编译、单测、竞态检查与静态检查
+        shell: bash
+        run: |
+          set -euo pipefail
+          go version
+          go test ./... -count=1 -race -v
+          go vet ./...
+          go build ./...
+      - name: 隔离启动真实 Dufs 验证 CI 直传与 MCP 权限
+        shell: bash
+        run: bash scripts/ci_real_dufs_test.sh

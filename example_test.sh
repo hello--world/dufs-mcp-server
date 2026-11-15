@@ -1,81 +1,22 @@
-#!/bin/bash
+#!/usr/bin/env bash
+set -euo pipefail
 
-# Dufs MCP Server 测试脚本
+# 真实 Dufs + MCP stdio 冒烟检查；此脚本不启动任何可公开访问的 HTTP 服务。
+: "${DUFS_URL:?请先设置实际 Dufs 地址}"
+: "${DUFS_USERNAME:?请使用已授权的 Dufs 只读账号}"
+: "${DUFS_PASSWORD:?请设置账号密码}"
 
-# 设置配置
-export DUFS_URL="http://127.0.0.1:5000"
-export DUFS_USERNAME="admin"
-export DUFS_PASSWORD="password"
-export PORT="8080"
-
-# 启动服务器（后台运行）
-./dufs-mcp-server &
-SERVER_PID=$!
-
-# 等待服务器启动
-sleep 2
-
-echo "=== 测试 MCP Server ==="
-echo ""
-
-# 1. 测试初始化
-echo "1. 测试初始化..."
-curl -X POST http://localhost:8080/message \
-  -H "Content-Type: application/json" \
-  -d '{
-    "jsonrpc": "2.0",
-    "id": 1,
-    "method": "initialize",
-    "params": {}
-  }' | jq .
-echo ""
-
-# 2. 列出工具
-echo "2. 列出可用工具..."
-curl -X POST http://localhost:8080/message \
-  -H "Content-Type: application/json" \
-  -d '{
-    "jsonrpc": "2.0",
-    "id": 2,
-    "method": "tools/list",
-    "params": {}
-  }' | jq .
-echo ""
-
-# 3. 健康检查
-echo "3. 健康检查..."
-curl -X POST http://localhost:8080/message \
-  -H "Content-Type: application/json" \
-  -d '{
-    "jsonrpc": "2.0",
-    "id": 3,
-    "method": "tools/call",
-    "params": {
-      "name": "dufs_health",
-      "arguments": {}
-    }
-  }' | jq .
-echo ""
-
-# 4. 列出目录
-echo "4. 列出根目录..."
-curl -X POST http://localhost:8080/message \
-  -H "Content-Type: application/json" \
-  -d '{
-    "jsonrpc": "2.0",
-    "id": 4,
-    "method": "tools/call",
-    "params": {
-      "name": "dufs_list",
-      "arguments": {
-        "path": "/",
-        "format": "json"
-      }
-    }
-  }' | jq .
-echo ""
-
-# 清理
-kill $SERVER_PID 2>/dev/null
-echo "测试完成！"
-
+{
+  printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}'
+  printf '%s\n' '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}'
+  printf '%s\n' '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"dufs_health","arguments":{}}}'
+} | MCP_MODE=stdio ./dufs-mcp-server | python3 -c '
+import json,sys
+messages=[json.loads(line) for line in sys.stdin if line.strip()]
+if len(messages)!=3 or any("error" in m for m in messages):
+    raise SystemExit("MCP initialize/tools/list/health failed")
+health=json.loads(messages[2]["result"]["content"][0]["text"])
+if not health.get("healthy"):
+    raise SystemExit("Dufs health check failed: "+str(health))
+print("REAL stdio MCP + Dufs health check passed")
+'
